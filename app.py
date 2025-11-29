@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -7,6 +6,7 @@ from folium.plugins import MarkerCluster
 import datetime
 import os
 import html
+import sys
 from typing import Optional
 
 # Hashing
@@ -110,20 +110,57 @@ def seed_data():
 init_db()
 seed_data()
 
+# --- UTILITY DB HELPERS ---
+def conn_fetch_user_by_username(username: str):
+    conn = sqlite3.connect(DB_NAME)
+    u = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+    conn.close()
+    return u
+
+def debug_show_hash(username: str):
+    u = conn_fetch_user_by_username(username)
+    if not u:
+        return f"Utente '{username}' non trovato"
+    return f"id={u[0]}, username={u[1]}, stored_hash_present={bool(u[2])}\nhash={u[2]!s}"
+
 # --- BACKEND LOGIC (stessa logica adattata) ---
 def authenticate(usr, pwd):
-    conn = sqlite3.connect(DB_NAME)
-    u = conn.execute("SELECT * FROM users WHERE username=?", (usr,)).fetchone()
-    conn.close()
-    if not u:
+    """
+    Authenticate with verbose debug output (stderr) to help trace issues.
+    """
+    if not usr or not pwd:
+        print("DEBUG: username o password vuoti", file=sys.stderr)
         return None
-    stored_hash = u[2]
+
+    usr = usr.strip()
+    pwd = pwd.strip()
+    conn = sqlite3.connect(DB_NAME)
     try:
-        if stored_hash and pbkdf2_sha256.verify(pwd, stored_hash):
+        u = conn.execute("SELECT * FROM users WHERE username=?", (usr,)).fetchone()
+    finally:
+        conn.close()
+
+    if not u:
+        print(f"DEBUG: utente '{usr}' non trovato", file=sys.stderr)
+        return None
+
+    # Schema: id, username, password, role, city, ...
+    stored_hash = u[2] if len(u) > 2 else None
+    print(f"DEBUG: trovato utente id={u[0]} username={u[1]} stored_hash_present={bool(stored_hash)}", file=sys.stderr)
+
+    if not stored_hash:
+        print("DEBUG: stored_hash è vuoto/None", file=sys.stderr)
+        return None
+
+    try:
+        verified = pbkdf2_sha256.verify(pwd, stored_hash)
+        print(f"DEBUG: pbkdf2_sha256.verify -> {verified}", file=sys.stderr)
+        if verified:
             return u
         else:
             return None
-    except Exception:
+    except Exception as ex:
+        print(f"DEBUG: eccezione verify: {ex}", file=sys.stderr)
         return None
 
 def register_user(u, p, r, c_city, b, q, e, rate):
@@ -145,7 +182,7 @@ def register_user(u, p, r, c_city, b, q, e, rate):
     except sqlite3.IntegrityError:
         return False, "❌ Errore: Username già in uso."
     except Exception as ex:
-        print("ERRORE REGISTRAZIONE:", ex)
+        print("ERRORE REGISTRAZIONE:", ex, file=sys.stderr)
         return False, f"❌ Errore tecnico: {ex}"
 
 def get_landing_pros():
@@ -258,10 +295,7 @@ def update_full_profile(uid, role, pwd, bio, email, address, age, clinical, det_
     conn = sqlite3.connect(DB_NAME)
     try:
         # Hash password if provided (non-empty)
-        if pwd:
-            pwd_hashed = pbkdf2_sha256.hash(pwd)
-        else:
-            pwd_hashed = None
+        pwd_hashed = pbkdf2_sha256.hash(pwd) if pwd else None
 
         if role == 'paziente':
             if pwd_hashed:
@@ -276,6 +310,7 @@ def update_full_profile(uid, role, pwd, bio, email, address, age, clinical, det_
         conn.commit()
         return True, "✅ Profilo salvato!"
     except Exception as e:
+        print(f"ERRORE update_full_profile: {e}", file=sys.stderr)
         return False, f"❌ Errore: {e}"
     finally:
         conn.close()
@@ -287,7 +322,7 @@ st.title("🏥 CareConnect (Streamlit)")
 if 'user' not in st.session_state:
     st.session_state['user'] = None  # will hold DB row tuple
 
-# Sidebar: Login / Register / Logout
+# Sidebar: Login / Register / Logout + Debug
 with st.sidebar:
     st.header("Accesso")
     if st.session_state['user'] is None:
@@ -300,7 +335,7 @@ with st.sidebar:
                 st.success(f"Benvenuto {user[1]}!")
                 st.experimental_rerun()
             else:
-                st.error("Credenziali non valide.")
+                st.error("Credenziali non valide. Controlla la console per i log di debug.")
         st.markdown("---")
         st.subheader("Registrazione")
         reg_u = st.text_input("Nuovo username", key="reg_u")
@@ -326,6 +361,13 @@ with st.sidebar:
         if st.button("Logout"):
             st.session_state['user'] = None
             st.experimental_rerun()
+
+    # Debug tools (developer only)
+    st.markdown("---")
+    st.subheader("Debug (dev only)")
+    dbg_user = st.text_input("Debug username", key="dbg_user")
+    if st.button("Mostra hash", key="dbg_btn"):
+        st.text_area("Hash utente", value=debug_show_hash(dbg_user), height=140)
 
 st.markdown("## 🏠 Home")
 # Landing: map + cards
@@ -409,7 +451,7 @@ if st.session_state['user'] is not None:
         with tab4:
             st.subheader("Profilo")
             # Unpack profile fields
-            email, addr, age, clinic, bio, pwd = usr[11], usr[12], usr[13], usr[14], usr[7], None
+            email, addr, age, clinic, bio = usr[11], usr[12], usr[13], usr[14], usr[7]
             with st.form("profile_pat"):
                 p_email = st.text_input("Email", value=email or "")
                 p_addr = st.text_input("Indirizzo", value=addr or "")
@@ -421,8 +463,11 @@ if st.session_state['user'] is not None:
                     ok, msg = update_full_profile(uid, 'paziente', p_pass, p_bio, p_email, p_addr, p_age, p_clinic, None)
                     if ok:
                         st.success(msg)
-                        # reload user info (if password changed, re-auth with new password; otherwise re-fetch by username)
-                        st.session_state['user'] = authenticate(uname, p_pass) if p_pass else conn_fetch_user_by_username(uname)
+                        # reload user info
+                        if p_pass:
+                            st.session_state['user'] = authenticate(uname, p_pass)
+                        else:
+                            st.session_state['user'] = conn_fetch_user_by_username(uname)
                         st.experimental_rerun()
                     else:
                         st.error(msg)
@@ -475,7 +520,7 @@ if st.session_state['user'] is not None:
         with tab3:
             st.subheader("Profilo Professionista")
             # Unpack profile
-            email, addr, age, det_exp, bio, pwd, qual, exp, rate = usr[11], usr[12], usr[13], usr[15], usr[7], None, usr[8], usr[9], usr[10]
+            email, addr, age, det_exp, bio, qual, exp, rate = usr[11], usr[12], usr[13], usr[15], usr[7], usr[8], usr[9], usr[10]
             with st.form("profile_pro"):
                 p_email = st.text_input("Email", value=email or "")
                 p_addr = st.text_input("Studio/Indirizzo", value=addr or "")
@@ -490,17 +535,13 @@ if st.session_state['user'] is not None:
                     ok, msg = update_full_profile(uid, 'professionista', p_pass, p_bio, p_email, p_addr, p_age, None, p_cv, p_q, p_e, p_r)
                     if ok:
                         st.success(msg)
-                        st.session_state['user'] = authenticate(uname, p_pass) if p_pass else conn_fetch_user_by_username(uname)
+                        if p_pass:
+                            st.session_state['user'] = authenticate(uname, p_pass)
+                        else:
+                            st.session_state['user'] = conn_fetch_user_by_username(uname)
                         st.experimental_rerun()
                     else:
                         st.error(msg)
 
 else:
     st.info("Effettua il login o registrati dalla sidebar per accedere alla dashboard.")
-
-# Utility helper per ricaricare user senza password (usata dopo aggiornamento profilo senza cambio password)
-def conn_fetch_user_by_username(username: str):
-    conn = sqlite3.connect(DB_NAME)
-    u = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
-    conn.close()
-    return u
