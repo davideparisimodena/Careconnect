@@ -16,11 +16,7 @@ DB_NAME = "home_care_v21.db"
 
 # --- NOTE ---
 # Per evitare che il database venga cancellato accidentalmente ad ogni avvio,
-# NON rimuoviamo più il file DB automaticamente. Se vuoi resettare il DB puoi
-# farlo manualmente dal pannello di debug nella sidebar (pulsante "RESET DB").
-#
-# Questo risolve il problema "utente non trovato" che si verifica quando il DB
-# viene cancellato e non viene correttamente re-seedato prima del login.
+# NON rimuoviamo più il file DB automaticamente. Usa il pulsante RESET DB nella sidebar.
 
 # --- AI (opzionale) ---
 AI_AVAILABLE = False
@@ -107,6 +103,19 @@ def seed_data():
 init_db()
 seed_data()
 
+# --- SAFE RERUN helper ---
+def safe_rerun():
+    """
+    Call st.experimental_rerun() safely: if it raises, log and stop the script gracefully.
+    """
+    try:
+        st.experimental_rerun()
+    except Exception as e:
+        # Log to stderr so you can see details in the terminal logs
+        print(f"WARNING: experimental_rerun failed: {e}", file=sys.stderr)
+        # Stop current script execution to avoid Streamlit' AttributeError crash surfacing
+        st.stop()
+
 # --- DB UTILITIES ---
 def conn_fetch_user_by_username(username: str):
     conn = sqlite3.connect(DB_NAME)
@@ -190,7 +199,7 @@ def register_user(u, p, r, c_city, b, q, e, rate):
         print("ERRORE REGISTRAZIONE:", ex, file=sys.stderr)
         return False, f"❌ Errore tecnico: {ex}"
 
-# Core functions (requests, chats, etc.) - kept similar to original
+# Core functions (requests, chats, etc.)
 def get_landing_pros():
     conn = sqlite3.connect(DB_NAME)
     c = conn.execute("SELECT username, city, bio, lat, lon, qualification, experience, hourly_rate FROM users WHERE role='professionista'")
@@ -337,7 +346,7 @@ with st.sidebar:
             if user:
                 st.session_state['user'] = user
                 st.success(f"Benvenuto {user[1]}!")
-                st.experimental_rerun()
+                safe_rerun()
             else:
                 st.error("Credenziali non valide. Controlla la console (terminale) per log di debug.")
         st.markdown("---")
@@ -364,7 +373,7 @@ with st.sidebar:
         st.write(f"Connesso come: {user[1]} ({user[3]})")
         if st.button("Logout"):
             st.session_state['user'] = None
-            st.experimental_rerun()
+            safe_rerun()
 
     # Debug tools (developer only)
     st.markdown("---")
@@ -387,7 +396,7 @@ with st.sidebar:
             init_db()
             seed_data()
             st.success("DB resettato e dati demo inseriti.")
-            st.experimental_rerun()
+            safe_rerun()
         except Exception as e:
             st.error(f"Errore reset DB: {e}")
 
@@ -464,7 +473,7 @@ if st.session_state['user'] is not None:
                 new_msg = st.text_input("Messaggio", key="pat_msg")
                 if st.button("Invia messaggio", key="pat_send"):
                     send_chat_msg(sel_id, uid, new_msg)
-                    st.experimental_rerun()
+                    safe_rerun()
 
         with tab3:
             st.subheader("Storico Richieste")
@@ -490,7 +499,7 @@ if st.session_state['user'] is not None:
                             st.session_state['user'] = authenticate(uname, p_pass)
                         else:
                             st.session_state['user'] = conn_fetch_user_by_username(uname)
-                        st.experimental_rerun()
+                        safe_rerun()
                     else:
                         st.error(msg)
 
@@ -500,7 +509,7 @@ if st.session_state['user'] is not None:
         with tab1:
             st.subheader("Richieste disponibili")
             if st.button("Aggiorna"):
-                st.experimental_rerun()
+                safe_rerun()
             open_jobs = get_pro_open_jobs(city, uid)
             st.dataframe(open_jobs)
             st.markdown("Accetta richieste inserendo l'ID")
@@ -537,7 +546,7 @@ if st.session_state['user'] is not None:
                 new_msg = st.text_input("Messaggio", key="pro_msg")
                 if st.button("Invia messaggio pro", key="pro_send"):
                     send_chat_msg(sel_id, uid, new_msg)
-                    st.experimental_rerun()
+                    safe_rerun()
 
         with tab3:
             st.subheader("Profilo Professionista")
@@ -560,7 +569,7 @@ if st.session_state['user'] is not None:
                             st.session_state['user'] = authenticate(uname, p_pass)
                         else:
                             st.session_state['user'] = conn_fetch_user_by_username(uname)
-                        st.experimental_rerun()
+                        safe_rerun()
                     else:
                         st.error(msg)
 else:
