@@ -124,11 +124,6 @@ def debug_show_hash(username: str):
 
 # --- BACKEND LOGIC ---
 def authenticate(usr, pwd):
-    """
-    Authenticate user:
-    - match username case-insensitive in DB
-    - verify password hash with passlib
-    """
     if not usr or not pwd:
         print("DEBUG: username o password vuoti", file=sys.stderr)
         return None
@@ -137,7 +132,6 @@ def authenticate(usr, pwd):
     p = pwd.strip()
     conn = sqlite3.connect(DB_NAME)
     try:
-        # match case-insensitive to avoid simple mismatches
         u = conn.execute("SELECT * FROM users WHERE LOWER(username)=?", (uname.lower(),)).fetchone()
     finally:
         conn.close()
@@ -319,11 +313,19 @@ def update_full_profile(uid, role, pwd, bio, email, address, age, clinical, det_
 st.set_page_config(page_title="CareConnect - Streamlit", layout="wide")
 st.title("🏥 CareConnect (Streamlit)")
 
+# Session defaults
 if 'user' not in st.session_state:
-    st.session_state['user'] = None  # will hold DB row tuple
+    st.session_state['user'] = None
+if 'page' not in st.session_state:
+    st.session_state['page'] = "Home"  # "Home" or "Dashboard"
 
-# Sidebar: Login / Register / Logout + Debug
+# Sidebar: Navigation + Login / Register / Logout + Debug
 with st.sidebar:
+    st.header("Navigazione")
+    nav = st.radio("Vai a", ("Home", "Dashboard"), index=0 if st.session_state['page']=="Home" else 1)
+    st.session_state['page'] = nav
+
+    st.markdown("---")
     st.header("Accesso")
     if st.session_state['user'] is None:
         login_user = st.text_input("Username", key="login_user")
@@ -331,8 +333,8 @@ with st.sidebar:
         if st.button("Login"):
             user = authenticate(login_user, login_pass)
             if user:
-                # Set session user and continue; do NOT call experimental_rerun to avoid errors.
                 st.session_state['user'] = user
+                st.session_state['page'] = "Dashboard"  # go to dashboard after login
                 st.success(f"Benvenuto {user[1]}!")
             else:
                 st.error("Credenziali non valide. Controlla la console (terminale) per log di debug.")
@@ -360,6 +362,7 @@ with st.sidebar:
         st.write(f"Connesso come: {user[1]} ({user[3]})")
         if st.button("Logout"):
             st.session_state['user'] = None
+            st.session_state['page'] = "Home"
             st.success("Sei stato disconnesso.")
 
     # Debug tools (developer only)
@@ -382,173 +385,180 @@ with st.sidebar:
                 os.remove(DB_NAME)
             init_db()
             seed_data()
+            st.session_state['user'] = None
+            st.session_state['page'] = "Home"
             st.success("DB resettato e dati demo inseriti.")
         except Exception as e:
             st.error(f"Errore reset DB: {e}")
 
-st.markdown("## 🏠 Home")
-# Landing: map + cards
-pros = get_landing_pros()
-col1, col2 = st.columns([2,1])
-with col1:
-    st.markdown("### Mappa professionisti")
-    html_map = create_map_html(pros)
-    components.html(html_map, height=500)
-with col2:
-    st.markdown("### Professionisti (schede)")
-    if pros:
-        for p in pros:
-            st.markdown(f"**{p[0]}** — {p[5] or ''} — €{p[7]}/h")
-    else:
-        st.info("Nessun professionista presente.")
+# Main layout: show Landing only when page == "Home"
+if st.session_state['page'] == "Home":
+    st.markdown("## 🏠 Home")
+    pros = get_landing_pros()
+    col1, col2 = st.columns([2,1])
+    with col1:
+        st.markdown("### Mappa professionisti")
+        html_map = create_map_html(pros)
+        components.html(html_map, height=500)
+    with col2:
+        st.markdown("### Professionisti (schede)")
+        if pros:
+            for p in pros:
+                st.markdown(f"**{p[0]}** — {p[5] or ''} — €{p[7]}/h")
+        else:
+            st.info("Nessun professionista presente.")
+    st.markdown("---")
+    st.info("Se vuoi accedere alla Dashboard effettua il login dalla sidebar.")
 
+# If page == Dashboard, show dashboard area (requires login)
+if st.session_state['page'] == "Dashboard":
+    if st.session_state['user'] is None:
+        st.warning("Devi effettuare il login per accedere alla Dashboard. Usa la sidebar per farlo.")
+    else:
+        usr = st.session_state['user']
+        uid = usr[0]
+        uname = usr[1]
+        role = usr[3]
+        city = usr[4]
+        st.success(f"Benvenuto {uname} — {role} — {city}")
+
+        if role == 'paziente':
+            st.header("👤 Area Paziente")
+            tab1, tab2, tab3, tab4 = st.tabs(["Richiedi", "Chat", "Storico", "Profilo"])
+
+            with tab1:
+                st.subheader("Analisi AI (opzionale)")
+                ai_text = st.text_input("Descrivi il bisogno per l'AI", key="ai_text")
+                if st.button("Analizza con AI"):
+                    if not AI_AVAILABLE:
+                        st.error("AI non disponibile. Installa sentence-transformers per abilitare.")
+                    else:
+                        ai_msg, _, ai_df, best = get_ai_rec(ai_text, city)
+                        st.info(ai_msg)
+                        if not ai_df.empty:
+                            st.dataframe(ai_df)
+                st.markdown("---")
+                st.subheader("Invia Richiesta")
+                with st.form("send_request"):
+                    req_cat = st.selectbox("Categoria", options=list(INTERVENTION_MAPPING.keys()))
+                    req_desc = st.text_area("Dettagli")
+                    req_target = st.text_input("ID Professionista target (opzionale)")
+                    submitted = st.form_submit_button("Invia Richiesta")
+                    if submitted:
+                        df = submit_request(uid, req_cat, req_desc, city, req_target)
+                        st.success("Richiesta inviata.")
+                        st.dataframe(df)
+
+            with tab2:
+                st.subheader("Chat attive")
+                chats = get_active_chats(uid, 'paziente')
+                if not chats:
+                    st.info("Nessuna chat attiva.")
+                else:
+                    mapping = {label: rid for label, rid in chats}
+                    sel = st.selectbox("Seleziona chat", options=list(mapping.keys()))
+                    sel_id = mapping.get(sel)
+                    msgs = get_chat_history(sel_id)
+                    for m in msgs:
+                        sender_id, content = m
+                        if sender_id == uid:
+                            st.chat_message("user").write(content)
+                        else:
+                            st.chat_message("assistant").write(content)
+                    new_msg = st.text_input("Messaggio", key="pat_msg")
+                    if st.button("Invia messaggio", key="pat_send"):
+                        send_chat_msg(sel_id, uid, new_msg)
+                        st.success("Messaggio inviato.")
+
+            with tab3:
+                st.subheader("Storico Richieste")
+                hist = get_patient_history(uid)
+                st.dataframe(hist)
+
+            with tab4:
+                st.subheader("Profilo")
+                email, addr, age, clinic, bio = usr[11], usr[12], usr[13], usr[14], usr[7]
+                with st.form("profile_pat"):
+                    p_email = st.text_input("Email", value=email or "")
+                    p_addr = st.text_input("Indirizzo", value=addr or "")
+                    p_age = st.number_input("Età", value=int(age) if age else 0)
+                    p_clinic = st.text_area("Storia Clinica", value=clinic or "")
+                    p_bio = st.text_area("Bio", value=bio or "")
+                    p_pass = st.text_input("Password (lascia vuoto per non cambiare)", type="password", value="")
+                    if st.form_submit_button("Salva Profilo"):
+                        ok, msg = update_full_profile(uid, 'paziente', p_pass, p_bio, p_email, p_addr, p_age, p_clinic, None)
+                        if ok:
+                            st.success(msg)
+                            st.session_state['user'] = conn_fetch_user_by_username(uname)
+                        else:
+                            st.error(msg)
+
+        else:
+            st.header("💼 Area Professionista")
+            tab1, tab2, tab3 = st.tabs(["Lavoro", "Chat", "Profilo"])
+            with tab1:
+                st.subheader("Richieste disponibili")
+                if st.button("Aggiorna"):
+                    st.experimental_rerun()
+                open_jobs = get_pro_open_jobs(city, uid)
+                st.dataframe(open_jobs)
+                st.markdown("Accetta richieste inserendo l'ID")
+                accept_id = st.number_input("ID richiesta da accettare", min_value=0, value=0)
+                if st.button("Accetta"):
+                    ok, msg, new_open, new_my = accept_request(accept_id, uid, city)
+                    if ok:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+                    st.dataframe(new_open)
+                    st.dataframe(new_my)
+                st.markdown("---")
+                st.subheader("Miei Pazienti / Carichi")
+                my_jobs = get_pro_my_jobs(uid)
+                st.dataframe(my_jobs)
+
+            with tab2:
+                st.subheader("Chat attive")
+                chats = get_active_chats(uid, 'professionista')
+                if not chats:
+                    st.info("Nessuna chat attiva.")
+                else:
+                    mapping = {label: rid for label, rid in chats}
+                    sel = st.selectbox("Seleziona chat", options=list(mapping.keys()))
+                    sel_id = mapping.get(sel)
+                    msgs = get_chat_history(sel_id)
+                    for m in msgs:
+                        sender_id, content = m
+                        if sender_id == uid:
+                            st.chat_message("user").write(content)
+                        else:
+                            st.chat_message("assistant").write(content)
+                    new_msg = st.text_input("Messaggio", key="pro_msg")
+                    if st.button("Invia messaggio pro", key="pro_send"):
+                        send_chat_msg(sel_id, uid, new_msg)
+                        st.success("Messaggio inviato.")
+
+            with tab3:
+                st.subheader("Profilo Professionista")
+                email, addr, age, det_exp, bio, qual, exp, rate = usr[11], usr[12], usr[13], usr[15], usr[7], usr[8], usr[9], usr[10]
+                with st.form("profile_pro"):
+                    p_email = st.text_input("Email", value=email or "")
+                    p_addr = st.text_input("Studio/Indirizzo", value=addr or "")
+                    p_age = st.number_input("Età", value=int(age) if age else 0)
+                    p_cv = st.text_area("CV / Dettagli", value=det_exp or "")
+                    p_bio = st.text_area("Bio", value=bio or "")
+                    p_pass = st.text_input("Password (lascia vuoto per non cambiare)", type="password", value="")
+                    p_q = st.selectbox("Qualifica", options=ALL_QUALIFICATIONS, index=ALL_QUALIFICATIONS.index(qual) if qual in ALL_QUALIFICATIONS else 0)
+                    p_e = st.number_input("Anni esperienza", min_value=0, value=int(exp) if exp else 0)
+                    p_r = st.number_input("Tariffa oraria (€)", min_value=0.0, value=float(rate) if rate else 10.0)
+                    if st.form_submit_button("Salva Profilo"):
+                        ok, msg = update_full_profile(uid, 'professionista', p_pass, p_bio, p_email, p_addr, p_age, None, p_cv, p_q, p_e, p_r)
+                        if ok:
+                            st.success(msg)
+                            st.session_state['user'] = conn_fetch_user_by_username(uname)
+                        else:
+                            st.error(msg)
+
+# Footer or note
 st.markdown("---")
-
-# Se utente loggato -> Dashboard (mostra immediatamente senza experimental_rerun)
-if st.session_state['user'] is not None:
-    usr = st.session_state['user']
-    uid = usr[0]
-    uname = usr[1]
-    role = usr[3]
-    city = usr[4]
-    st.success(f"Benvenuto {uname} — {role} — {city}")
-
-    if role == 'paziente':
-        st.header("👤 Area Paziente")
-        tab1, tab2, tab3, tab4 = st.tabs(["Richiedi", "Chat", "Storico", "Profilo"])
-
-        with tab1:
-            st.subheader("Analisi AI (opzionale)")
-            ai_text = st.text_input("Descrivi il bisogno per l'AI", key="ai_text")
-            if st.button("Analizza con AI"):
-                if not AI_AVAILABLE:
-                    st.error("AI non disponibile. Installa sentence-transformers per abilitare.")
-                else:
-                    ai_msg, _, ai_df, best = get_ai_rec(ai_text, city)
-                    st.info(ai_msg)
-                    if not ai_df.empty:
-                        st.dataframe(ai_df)
-            st.markdown("---")
-            st.subheader("Invia Richiesta")
-            with st.form("send_request"):
-                req_cat = st.selectbox("Categoria", options=list(INTERVENTION_MAPPING.keys()))
-                req_desc = st.text_area("Dettagli")
-                req_target = st.text_input("ID Professionista target (opzionale)")
-                submitted = st.form_submit_button("Invia Richiesta")
-                if submitted:
-                    df = submit_request(uid, req_cat, req_desc, city, req_target)
-                    st.success("Richiesta inviata.")
-                    st.dataframe(df)
-
-        with tab2:
-            st.subheader("Chat attive")
-            chats = get_active_chats(uid, 'paziente')
-            if not chats:
-                st.info("Nessuna chat attiva.")
-            else:
-                mapping = {label: rid for label, rid in chats}
-                sel = st.selectbox("Seleziona chat", options=list(mapping.keys()))
-                sel_id = mapping.get(sel)
-                msgs = get_chat_history(sel_id)
-                for m in msgs:
-                    sender_id, content = m
-                    if sender_id == uid:
-                        st.chat_message("user").write(content)
-                    else:
-                        st.chat_message("assistant").write(content)
-                new_msg = st.text_input("Messaggio", key="pat_msg")
-                if st.button("Invia messaggio", key="pat_send"):
-                    send_chat_msg(sel_id, uid, new_msg)
-                    st.success("Messaggio inviato.")
-
-        with tab3:
-            st.subheader("Storico Richieste")
-            hist = get_patient_history(uid)
-            st.dataframe(hist)
-
-        with tab4:
-            st.subheader("Profilo")
-            email, addr, age, clinic, bio = usr[11], usr[12], usr[13], usr[14], usr[7]
-            with st.form("profile_pat"):
-                p_email = st.text_input("Email", value=email or "")
-                p_addr = st.text_input("Indirizzo", value=addr or "")
-                p_age = st.number_input("Età", value=int(age) if age else 0)
-                p_clinic = st.text_area("Storia Clinica", value=clinic or "")
-                p_bio = st.text_area("Bio", value=bio or "")
-                p_pass = st.text_input("Password (lascia vuoto per non cambiare)", type="password", value="")
-                if st.form_submit_button("Salva Profilo"):
-                    ok, msg = update_full_profile(uid, 'paziente', p_pass, p_bio, p_email, p_addr, p_age, p_clinic, None)
-                    if ok:
-                        st.success(msg)
-                        # reload user in session (fetch current data)
-                        st.session_state['user'] = conn_fetch_user_by_username(uname)
-                    else:
-                        st.error(msg)
-
-    else:
-        st.header("💼 Area Professionista")
-        tab1, tab2, tab3 = st.tabs(["Lavoro", "Chat", "Profilo"])
-        with tab1:
-            st.subheader("Richieste disponibili")
-            if st.button("Aggiorna"):
-                st.experimental_rerun()
-            open_jobs = get_pro_open_jobs(city, uid)
-            st.dataframe(open_jobs)
-            st.markdown("Accetta richieste inserendo l'ID")
-            accept_id = st.number_input("ID richiesta da accettare", min_value=0, value=0)
-            if st.button("Accetta"):
-                ok, msg, new_open, new_my = accept_request(accept_id, uid, city)
-                if ok:
-                    st.success(msg)
-                else:
-                    st.error(msg)
-                st.dataframe(new_open)
-                st.dataframe(new_my)
-            st.markdown("---")
-            st.subheader("Miei Pazienti / Carichi")
-            my_jobs = get_pro_my_jobs(uid)
-            st.dataframe(my_jobs)
-
-        with tab2:
-            st.subheader("Chat attive")
-            chats = get_active_chats(uid, 'professionista')
-            if not chats:
-                st.info("Nessuna chat attiva.")
-            else:
-                mapping = {label: rid for label, rid in chats}
-                sel = st.selectbox("Seleziona chat", options=list(mapping.keys()))
-                sel_id = mapping.get(sel)
-                msgs = get_chat_history(sel_id)
-                for m in msgs:
-                    sender_id, content = m
-                    if sender_id == uid:
-                        st.chat_message("user").write(content)
-                    else:
-                        st.chat_message("assistant").write(content)
-                new_msg = st.text_input("Messaggio", key="pro_msg")
-                if st.button("Invia messaggio pro", key="pro_send"):
-                    send_chat_msg(sel_id, uid, new_msg)
-                    st.success("Messaggio inviato.")
-
-        with tab3:
-            st.subheader("Profilo Professionista")
-            email, addr, age, det_exp, bio, qual, exp, rate = usr[11], usr[12], usr[13], usr[15], usr[7], usr[8], usr[9], usr[10]
-            with st.form("profile_pro"):
-                p_email = st.text_input("Email", value=email or "")
-                p_addr = st.text_input("Studio/Indirizzo", value=addr or "")
-                p_age = st.number_input("Età", value=int(age) if age else 0)
-                p_cv = st.text_area("CV / Dettagli", value=det_exp or "")
-                p_bio = st.text_area("Bio", value=bio or "")
-                p_pass = st.text_input("Password (lascia vuoto per non cambiare)", type="password", value="")
-                p_q = st.selectbox("Qualifica", options=ALL_QUALIFICATIONS, index=ALL_QUALIFICATIONS.index(qual) if qual in ALL_QUALIFICATIONS else 0)
-                p_e = st.number_input("Anni esperienza", min_value=0, value=int(exp) if exp else 0)
-                p_r = st.number_input("Tariffa oraria (€)", min_value=0.0, value=float(rate) if rate else 10.0)
-                if st.form_submit_button("Salva Profilo"):
-                    ok, msg = update_full_profile(uid, 'professionista', p_pass, p_bio, p_email, p_addr, p_age, None, p_cv, p_q, p_e, p_r)
-                    if ok:
-                        st.success(msg)
-                        st.session_state['user'] = conn_fetch_user_by_username(uname)
-                    else:
-                        st.error(msg)
-else:
-    st.info("Effettua il login o registrati dalla sidebar per accedere alla dashboard.")
+st.caption("Naviga tra Home e Dashboard dalla sidebar. La mappa è visibile solo nella Home (landing).")
