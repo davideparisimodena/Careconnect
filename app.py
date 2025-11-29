@@ -15,8 +15,8 @@ import streamlit.components.v1 as components
 DB_NAME = "home_care_v21.db"
 
 # --- NOTE ---
-# Per evitare che il database venga cancellato accidentalmente ad ogni avvio,
-# NON rimuoviamo più il file DB automaticamente. Usa il pulsante RESET DB nella sidebar.
+# Non cancelliamo più il DB automaticamente all'avvio per evitare perdita dati.
+# Usa il pulsante "RESET DB" nella sidebar se vuoi ripristinare il DB demo.
 
 # --- AI (opzionale) ---
 AI_AVAILABLE = False
@@ -102,19 +102,6 @@ def seed_data():
 # Initialize DB and seed if needed
 init_db()
 seed_data()
-
-# --- SAFE RERUN helper ---
-def safe_rerun():
-    """
-    Call st.experimental_rerun() safely: if it raises, log and stop the script gracefully.
-    """
-    try:
-        st.experimental_rerun()
-    except Exception as e:
-        # Log to stderr so you can see details in the terminal logs
-        print(f"WARNING: experimental_rerun failed: {e}", file=sys.stderr)
-        # Stop current script execution to avoid Streamlit' AttributeError crash surfacing
-        st.stop()
 
 # --- DB UTILITIES ---
 def conn_fetch_user_by_username(username: str):
@@ -344,9 +331,9 @@ with st.sidebar:
         if st.button("Login"):
             user = authenticate(login_user, login_pass)
             if user:
+                # Set session user and continue; do NOT call experimental_rerun to avoid errors.
                 st.session_state['user'] = user
                 st.success(f"Benvenuto {user[1]}!")
-                safe_rerun()
             else:
                 st.error("Credenziali non valide. Controlla la console (terminale) per log di debug.")
         st.markdown("---")
@@ -373,7 +360,7 @@ with st.sidebar:
         st.write(f"Connesso come: {user[1]} ({user[3]})")
         if st.button("Logout"):
             st.session_state['user'] = None
-            safe_rerun()
+            st.success("Sei stato disconnesso.")
 
     # Debug tools (developer only)
     st.markdown("---")
@@ -396,7 +383,6 @@ with st.sidebar:
             init_db()
             seed_data()
             st.success("DB resettato e dati demo inseriti.")
-            safe_rerun()
         except Exception as e:
             st.error(f"Errore reset DB: {e}")
 
@@ -418,7 +404,7 @@ with col2:
 
 st.markdown("---")
 
-# Se utente loggato -> Dashboard
+# Se utente loggato -> Dashboard (mostra immediatamente senza experimental_rerun)
 if st.session_state['user'] is not None:
     usr = st.session_state['user']
     uid = usr[0]
@@ -473,7 +459,7 @@ if st.session_state['user'] is not None:
                 new_msg = st.text_input("Messaggio", key="pat_msg")
                 if st.button("Invia messaggio", key="pat_send"):
                     send_chat_msg(sel_id, uid, new_msg)
-                    safe_rerun()
+                    st.success("Messaggio inviato.")
 
         with tab3:
             st.subheader("Storico Richieste")
@@ -494,12 +480,8 @@ if st.session_state['user'] is not None:
                     ok, msg = update_full_profile(uid, 'paziente', p_pass, p_bio, p_email, p_addr, p_age, p_clinic, None)
                     if ok:
                         st.success(msg)
-                        # reload user
-                        if p_pass:
-                            st.session_state['user'] = authenticate(uname, p_pass)
-                        else:
-                            st.session_state['user'] = conn_fetch_user_by_username(uname)
-                        safe_rerun()
+                        # reload user in session (fetch current data)
+                        st.session_state['user'] = conn_fetch_user_by_username(uname)
                     else:
                         st.error(msg)
 
@@ -509,7 +491,7 @@ if st.session_state['user'] is not None:
         with tab1:
             st.subheader("Richieste disponibili")
             if st.button("Aggiorna"):
-                safe_rerun()
+                st.experimental_rerun()
             open_jobs = get_pro_open_jobs(city, uid)
             st.dataframe(open_jobs)
             st.markdown("Accetta richieste inserendo l'ID")
@@ -546,7 +528,7 @@ if st.session_state['user'] is not None:
                 new_msg = st.text_input("Messaggio", key="pro_msg")
                 if st.button("Invia messaggio pro", key="pro_send"):
                     send_chat_msg(sel_id, uid, new_msg)
-                    safe_rerun()
+                    st.success("Messaggio inviato.")
 
         with tab3:
             st.subheader("Profilo Professionista")
@@ -565,11 +547,7 @@ if st.session_state['user'] is not None:
                     ok, msg = update_full_profile(uid, 'professionista', p_pass, p_bio, p_email, p_addr, p_age, None, p_cv, p_q, p_e, p_r)
                     if ok:
                         st.success(msg)
-                        if p_pass:
-                            st.session_state['user'] = authenticate(uname, p_pass)
-                        else:
-                            st.session_state['user'] = conn_fetch_user_by_username(uname)
-                        safe_rerun()
+                        st.session_state['user'] = conn_fetch_user_by_username(uname)
                     else:
                         st.error(msg)
 else:
