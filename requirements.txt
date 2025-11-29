@@ -1,0 +1,6 @@
+streamlit
+pandas
+folium
+passlib
+sentence-transformers
+torch
