@@ -8,20 +8,19 @@ import os
 import html
 import sys
 from typing import Optional
-
-# Hashing
 from passlib.hash import pbkdf2_sha256
+import streamlit.components.v1 as components
 
-# --- 0. CONFIG ---
+# --- CONFIG ---
 DB_NAME = "home_care_v21.db"
 
-# --- CLEAN INSTALL (come nel codice originale) ---
-if os.path.exists(DB_NAME):
-    try:
-        os.remove(DB_NAME)
-        print(f"🗑️ Vecchio database {DB_NAME} eliminato per pulizia.")
-    except Exception as e:
-        print("Impossibile eliminare DB:", e)
+# --- NOTE ---
+# Per evitare che il database venga cancellato accidentalmente ad ogni avvio,
+# NON rimuoviamo più il file DB automaticamente. Se vuoi resettare il DB puoi
+# farlo manualmente dal pannello di debug nella sidebar (pulsante "RESET DB").
+#
+# Questo risolve il problema "utente non trovato" che si verifica quando il DB
+# viene cancellato e non viene correttamente re-seedato prima del login.
 
 # --- AI (opzionale) ---
 AI_AVAILABLE = False
@@ -55,7 +54,7 @@ CITY_COORDS = {
     "Palermo": (38.1157, 13.3615), "Bari": (41.1171, 16.8719)
 }
 
-# --- DATABASE ---
+# --- DATABASE SETUP ---
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -88,34 +87,38 @@ def init_db():
                   FOREIGN KEY(request_id) REFERENCES requests(id))''')
     conn.commit()
     conn.close()
-    print("✅ Database creato ex-novo.")
 
 def seed_data():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    if c.execute("SELECT count(*) FROM users").fetchone()[0] == 0:
-        print("🌱 Inserimento dati demo...")
-        # Hashed demo password
+    count = c.execute("SELECT count(*) FROM users").fetchone()[0]
+    if count == 0:
+        # Demo users with hashed password "pass"
         hashed_pass = pbkdf2_sha256.hash("pass")
         users = [
-            # Paziente: mario_rossi
             ("mario_rossi", hashed_pass, "paziente", "Milano", 45.4642, 9.1900, "Paziente Demo", None, 0, 0, "mario@email.it", "Via Roma 1", 80, "Diabete", None),
-            # Professionista: luigi_verdi
             ("luigi_verdi", hashed_pass, "professionista", "Milano", 45.4680, 9.2000, "Infermiere Pro", "Infermiere", 10, 25.0, "luigi@nurse.it", "Via Milano 20", 40, None, "Exp 10 anni")
         ]
         c.executemany("INSERT INTO users VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", users)
         conn.commit()
     conn.close()
 
+# Initialize DB and seed if needed
 init_db()
 seed_data()
 
-# --- UTILITY DB HELPERS ---
+# --- DB UTILITIES ---
 def conn_fetch_user_by_username(username: str):
     conn = sqlite3.connect(DB_NAME)
-    u = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+    u = conn.execute("SELECT * FROM users WHERE LOWER(username)=?", (username.lower(),)).fetchone()
     conn.close()
     return u
+
+def list_users():
+    conn = sqlite3.connect(DB_NAME)
+    rows = conn.execute("SELECT id, username, role, city FROM users").fetchall()
+    conn.close()
+    return rows
 
 def debug_show_hash(username: str):
     u = conn_fetch_user_by_username(username)
@@ -123,28 +126,30 @@ def debug_show_hash(username: str):
         return f"Utente '{username}' non trovato"
     return f"id={u[0]}, username={u[1]}, stored_hash_present={bool(u[2])}\nhash={u[2]!s}"
 
-# --- BACKEND LOGIC (stessa logica adattata) ---
+# --- BACKEND LOGIC ---
 def authenticate(usr, pwd):
     """
-    Authenticate with verbose debug output (stderr) to help trace issues.
+    Authenticate user:
+    - match username case-insensitive in DB
+    - verify password hash with passlib
     """
     if not usr or not pwd:
         print("DEBUG: username o password vuoti", file=sys.stderr)
         return None
 
-    usr = usr.strip()
-    pwd = pwd.strip()
+    uname = usr.strip()
+    p = pwd.strip()
     conn = sqlite3.connect(DB_NAME)
     try:
-        u = conn.execute("SELECT * FROM users WHERE username=?", (usr,)).fetchone()
+        # match case-insensitive to avoid simple mismatches
+        u = conn.execute("SELECT * FROM users WHERE LOWER(username)=?", (uname.lower(),)).fetchone()
     finally:
         conn.close()
 
     if not u:
-        print(f"DEBUG: utente '{usr}' non trovato", file=sys.stderr)
+        print(f"DEBUG: utente '{uname}' non trovato (case-insensitive search)", file=sys.stderr)
         return None
 
-    # Schema: id, username, password, role, city, ...
     stored_hash = u[2] if len(u) > 2 else None
     print(f"DEBUG: trovato utente id={u[0]} username={u[1]} stored_hash_present={bool(stored_hash)}", file=sys.stderr)
 
@@ -153,7 +158,7 @@ def authenticate(usr, pwd):
         return None
 
     try:
-        verified = pbkdf2_sha256.verify(pwd, stored_hash)
+        verified = pbkdf2_sha256.verify(p, stored_hash)
         print(f"DEBUG: pbkdf2_sha256.verify -> {verified}", file=sys.stderr)
         if verified:
             return u
@@ -185,6 +190,7 @@ def register_user(u, p, r, c_city, b, q, e, rate):
         print("ERRORE REGISTRAZIONE:", ex, file=sys.stderr)
         return False, f"❌ Errore tecnico: {ex}"
 
+# Core functions (requests, chats, etc.) - kept similar to original
 def get_landing_pros():
     conn = sqlite3.connect(DB_NAME)
     c = conn.execute("SELECT username, city, bio, lat, lon, qualification, experience, hourly_rate FROM users WHERE role='professionista'")
@@ -294,9 +300,7 @@ def create_map_html(pros):
 def update_full_profile(uid, role, pwd, bio, email, address, age, clinical, det_exp, qual=None, num_exp=None, rate=None):
     conn = sqlite3.connect(DB_NAME)
     try:
-        # Hash password if provided (non-empty)
         pwd_hashed = pbkdf2_sha256.hash(pwd) if pwd else None
-
         if role == 'paziente':
             if pwd_hashed:
                 conn.execute("UPDATE users SET password=?, bio=?, email=?, address=?, age=?, clinical_history=? WHERE id=?", (pwd_hashed, bio, email, address, age, clinical, uid))
@@ -326,8 +330,8 @@ if 'user' not in st.session_state:
 with st.sidebar:
     st.header("Accesso")
     if st.session_state['user'] is None:
-        login_user = st.text_input("Username")
-        login_pass = st.text_input("Password", type="password")
+        login_user = st.text_input("Username", key="login_user")
+        login_pass = st.text_input("Password", type="password", key="login_pass")
         if st.button("Login"):
             user = authenticate(login_user, login_pass)
             if user:
@@ -335,7 +339,7 @@ with st.sidebar:
                 st.success(f"Benvenuto {user[1]}!")
                 st.experimental_rerun()
             else:
-                st.error("Credenziali non valide. Controlla la console per i log di debug.")
+                st.error("Credenziali non valide. Controlla la console (terminale) per log di debug.")
         st.markdown("---")
         st.subheader("Registrazione")
         reg_u = st.text_input("Nuovo username", key="reg_u")
@@ -364,10 +368,28 @@ with st.sidebar:
 
     # Debug tools (developer only)
     st.markdown("---")
-    st.subheader("Debug (dev only)")
-    dbg_user = st.text_input("Debug username", key="dbg_user")
+    st.subheader("Debug & DB management (dev only)")
+    if st.button("Lista utenti (debug)"):
+        rows = list_users()
+        if rows:
+            st.table(pd.DataFrame(rows, columns=["id", "username", "role", "city"]))
+        else:
+            st.write("Nessun utente.")
+    dbg_user = st.text_input("Mostra hash per username (debug)", key="dbg_user")
     if st.button("Mostra hash", key="dbg_btn"):
         st.text_area("Hash utente", value=debug_show_hash(dbg_user), height=140)
+
+    st.markdown("### RESET DB (usare con cautela)")
+    if st.button("RESET DB (elimina e ricrea DB con demo)"):
+        try:
+            if os.path.exists(DB_NAME):
+                os.remove(DB_NAME)
+            init_db()
+            seed_data()
+            st.success("DB resettato e dati demo inseriti.")
+            st.experimental_rerun()
+        except Exception as e:
+            st.error(f"Errore reset DB: {e}")
 
 st.markdown("## 🏠 Home")
 # Landing: map + cards
@@ -376,12 +398,13 @@ col1, col2 = st.columns([2,1])
 with col1:
     st.markdown("### Mappa professionisti")
     html_map = create_map_html(pros)
-    st.components.v1.html(html_map, height=500)
+    components.html(html_map, height=500)
 with col2:
     st.markdown("### Professionisti (schede)")
-    for p in pros:
-        st.markdown(f"**{p[0]}** — {p[5] or ''} — €{p[7]}/h")
-    if not pros:
+    if pros:
+        for p in pros:
+            st.markdown(f"**{p[0]}** — {p[5] or ''} — €{p[7]}/h")
+    else:
         st.info("Nessun professionista presente.")
 
 st.markdown("---")
@@ -401,7 +424,7 @@ if st.session_state['user'] is not None:
 
         with tab1:
             st.subheader("Analisi AI (opzionale)")
-            ai_text = st.text_input("Descrivi il bisogno per farti aiutare dall'AI")
+            ai_text = st.text_input("Descrivi il bisogno per l'AI", key="ai_text")
             if st.button("Analizza con AI"):
                 if not AI_AVAILABLE:
                     st.error("AI non disponibile. Installa sentence-transformers per abilitare.")
@@ -438,7 +461,7 @@ if st.session_state['user'] is not None:
                         st.chat_message("user").write(content)
                     else:
                         st.chat_message("assistant").write(content)
-                new_msg = st.text_input("Messaggio")
+                new_msg = st.text_input("Messaggio", key="pat_msg")
                 if st.button("Invia messaggio", key="pat_send"):
                     send_chat_msg(sel_id, uid, new_msg)
                     st.experimental_rerun()
@@ -450,7 +473,6 @@ if st.session_state['user'] is not None:
 
         with tab4:
             st.subheader("Profilo")
-            # Unpack profile fields
             email, addr, age, clinic, bio = usr[11], usr[12], usr[13], usr[14], usr[7]
             with st.form("profile_pat"):
                 p_email = st.text_input("Email", value=email or "")
@@ -463,7 +485,7 @@ if st.session_state['user'] is not None:
                     ok, msg = update_full_profile(uid, 'paziente', p_pass, p_bio, p_email, p_addr, p_age, p_clinic, None)
                     if ok:
                         st.success(msg)
-                        # reload user info
+                        # reload user
                         if p_pass:
                             st.session_state['user'] = authenticate(uname, p_pass)
                         else:
@@ -512,14 +534,13 @@ if st.session_state['user'] is not None:
                         st.chat_message("user").write(content)
                     else:
                         st.chat_message("assistant").write(content)
-                new_msg = st.text_input("Messaggio")
+                new_msg = st.text_input("Messaggio", key="pro_msg")
                 if st.button("Invia messaggio pro", key="pro_send"):
                     send_chat_msg(sel_id, uid, new_msg)
                     st.experimental_rerun()
 
         with tab3:
             st.subheader("Profilo Professionista")
-            # Unpack profile
             email, addr, age, det_exp, bio, qual, exp, rate = usr[11], usr[12], usr[13], usr[15], usr[7], usr[8], usr[9], usr[10]
             with st.form("profile_pro"):
                 p_email = st.text_input("Email", value=email or "")
@@ -542,6 +563,5 @@ if st.session_state['user'] is not None:
                         st.experimental_rerun()
                     else:
                         st.error(msg)
-
 else:
     st.info("Effettua il login o registrati dalla sidebar per accedere alla dashboard.")
